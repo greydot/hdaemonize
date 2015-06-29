@@ -3,7 +3,7 @@ module System.Posix.Daemonize (
   -- * Simple daemonization
   daemonize, 
   -- * Building system services
-  serviced, CreateDaemon(..), simpleDaemon,
+  serviced, Daemon(..), simpleDaemon,
   -- * Intradaemon utilities                              
   fatalError, exitCleanly
   -- * An example                              
@@ -18,7 +18,7 @@ module System.Posix.Daemonize (
   --                               
   -- > module Main where
   -- >
-  -- > import System.Posix.Daemonize (CreateDaemon(..), serviced, simpleDaemon)
+  -- > import System.Posix.Daemonize (Daemon(..), serviced, simpleDaemon)
   -- > import System.Posix.Signals (installHandler, Handler(Catch), sigHUP, fullSignalSet)
   -- > import System.Posix.Syslog (syslog, Priority(Notice))
   -- > import Control.Concurrent (threadDelay)
@@ -27,7 +27,7 @@ module System.Posix.Daemonize (
   -- > main :: IO ()
   -- > main = serviced stillAlive
   -- > 
-  -- > stillAlive :: CreateDaemon ()
+  -- > stillAlive :: Daemon ()
   -- > stillAlive = simpleDaemon { program = stillAliveMain }
   -- > 
   -- > stillAliveMain :: () -> IO ()
@@ -134,12 +134,12 @@ daemonize program =
 --   It goes through the same sequence for group.  Just to complicate
 --   matters, the name of the daemon is by default the name of the
 --   executable file, but can again be set to something else in the
---   'CreateDaemon' record.
+--   'Daemon' record.
 -- 
 --   Finally, exceptions in the program are caught, logged to syslog,
 --   and the program restarted.
 
-serviced :: CreateDaemon a -> IO ()
+serviced :: Daemon a -> IO ()
 serviced daemon = do 
   systemName <- getProgName
   let daemon' = daemon { name = if isNothing (name daemon) 
@@ -208,11 +208,11 @@ serviced daemon = do
 whenM :: Monad m => m Bool -> m () -> m ()
 whenM c a = c >>= \res -> when res a
 
--- | The details of any given daemon are fixed by the 'CreateDaemon'
+-- | The details of any given daemon are fixed by the 'Daemon'
 -- record passed to 'serviced'.  You can also take a predefined form
--- of 'CreateDaemon', such as 'simpleDaemon' below, and set what
+-- of 'Daemon', such as 'simpleDaemon' below, and set what
 -- options you want, rather than defining the whole record yourself.
-data CreateDaemon a = CreateDaemon {
+data Daemon a = CreateDaemon {
   privilegedAction :: IO a, -- ^ An action to be run as root, before
                             -- permissions are dropped, e.g., binding
                             -- a trusted port.
@@ -254,7 +254,7 @@ data CreateDaemon a = CreateDaemon {
                         -- wait forever.  Default 4.
 }
 
--- | The simplest possible instance of 'CreateDaemon' is 
+-- | The simplest possible instance of 'Daemon' is 
 -- 
 -- > CreateDaemon {
 -- >  privilegedAction = return ()
@@ -270,7 +270,7 @@ data CreateDaemon a = CreateDaemon {
 -- name, 'simpleDaemon', since you may want to use it as a template
 -- and modify only the fields that you need.
 
-simpleDaemon :: CreateDaemon ()
+simpleDaemon :: Daemon ()
 simpleDaemon = CreateDaemon {
   name = Nothing,
   user = Nothing,
@@ -320,7 +320,7 @@ getUserID user =
         f (Left _)    = Nothing
         f (Right uid) = Just uid
 
-dropPrivileges :: CreateDaemon a -> IO ()
+dropPrivileges :: Daemon a -> IO ()
 dropPrivileges daemon = 
     do Just ud <- getUserID "daemon"
        Just gd <- getGroupID "daemon"
@@ -331,19 +331,19 @@ dropPrivileges daemon =
        setGroupID g 
        setUserID u
 
-pidFile:: CreateDaemon a -> String
+pidFile:: Daemon a -> String
 pidFile daemon = joinPath [dir, (fromJust $ name daemon) ++ ".pid"]
   where dir = fromMaybe "/var/run" (pidfileDirectory daemon)
 
-pidExists :: CreateDaemon a -> IO Bool
+pidExists :: Daemon a -> IO Bool
 pidExists daemon = fileExist (pidFile daemon)
 
-pidRead :: CreateDaemon a -> IO (Maybe CPid)
+pidRead :: Daemon a -> IO (Maybe CPid)
 pidRead daemon = pidExists daemon >>= choose where
     choose True  = fmap (Just . read) $ readFile (pidFile daemon)
     choose False = return Nothing
 
-pidWrite :: CreateDaemon a -> IO ()
+pidWrite :: Daemon a -> IO ()
 pidWrite daemon =
     getProcessID >>= \pid ->
     writeFile (pidFile daemon) (show pid)
