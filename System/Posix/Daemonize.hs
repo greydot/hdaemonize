@@ -4,7 +4,7 @@ module System.Posix.Daemonize (
   -- * Simple daemonization
   daemonize,
   -- * Building system services
-  serviced, CreateDaemon(..), simpleDaemon,
+  serviced, serviced', CreateDaemon(..), simpleDaemon, Operation(..),
   -- * Intradaemon utilities
   fatalError, exitCleanly,
   -- * Logging utilities
@@ -36,10 +36,12 @@ import Data.ByteString.Unsafe (unsafeUseAsCStringLen)
 import Data.Maybe (isNothing, fromMaybe, fromJust)
 import System.Environment
 import System.Exit
-import System.Posix
+import System.Posix hiding (Start, Stop)
 import System.Posix.Syslog (Priority(..), Facility(Daemon), Option, withSyslog)
 import qualified System.Posix.Syslog as Log
 import System.FilePath.Posix (joinPath)
+
+data Operation = Start | Stop | Restart | Status deriving (Eq, Show)
 
 syslog :: Priority -> ByteString -> IO ()
 syslog pri msg = unsafeUseAsCStringLen msg (Log.syslog (Just Daemon) pri)
@@ -117,11 +119,30 @@ daemonize program = do
 
 serviced :: CreateDaemon a -> IO ()
 serviced daemon = do
-        systemName <- getProgName
-        let daemon' = daemon { name = if isNothing (name daemon)
-                                        then Just systemName else name daemon }
         args <- getArgs
-        process daemon' args
+
+        let mOperation :: Maybe Operation
+            mOperation = case args of
+              ("start" : _)   -> Just Start
+              ("stop" : _)    -> Just Stop
+              ("restart" : _) -> Just Restart
+              ("status" : _)  -> Just Status
+              _               -> Nothing
+
+        if isNothing mOperation
+          then getProgName >>= \pname -> putStrLn $ "usage: " ++ pname ++ " {start|stop|status|restart}"
+          else serviced' daemon $ fromJust mOperation
+        
+-- | For cases where you want to get the operation (and potentially
+-- daemon name) from another source than the raw arguments, serviced'
+-- may be used directly.
+
+serviced' :: CreateDaemon a -> Operation -> IO ()
+serviced' daemon operation = do
+      systemName <- getProgName
+      let daemon' = daemon { name = if isNothing (name daemon)
+                                    then Just systemName else name daemon }
+      process daemon' operation
     where
       program' daemon = withSyslog (fromJust (name daemon)) (syslogOptions daemon) Daemon $
                       do let log = syslog Notice
@@ -131,12 +152,12 @@ serviced daemon = do
                          dropPrivileges daemon
                          forever $ program daemon privVal
 
-      process daemon ["start"] = pidExists daemon >>= f where
+      process daemon Start = pidExists daemon >>= f where
           f True  = do error "PID file exists. Process already running?"
                        exitImmediately (ExitFailure 1)
           f False = daemonize (program' daemon)
 
-      process daemon ["stop"]  =
+      process daemon Stop  =
           do pid <- pidRead daemon
              case pid of
                Nothing  -> pass
@@ -148,10 +169,10 @@ serviced daemon = do
                    `finally`
                    removeLink (pidFile daemon)
 
-      process daemon ["restart"] = do process daemon ["stop"]
-                                      process daemon ["start"]
+      process daemon Restart = do process daemon Stop
+                                  process daemon Start
 
-      process daemon ["status"] = pidExists daemon >>= f where
+      process daemon Status = pidExists daemon >>= f where
         f True =
           do pid <- pidRead daemon
              case pid of
@@ -162,9 +183,6 @@ serviced daemon = do
                               putStrLn $ fromJust (name daemon) ++ " is running."
                          else putStrLn $ fromJust (name daemon) ++ " is not running, but pidfile is remaining."
         f False = putStrLn $ fromJust (name daemon) ++ " is not running."
-
-      process _      _ =
-        getProgName >>= \pname -> putStrLn $ "usage: " ++ pname ++ " {start|stop|status|restart}"
 
       -- Wait 'secs' seconds for the process to exit, checking
       -- for liveness once a second.  If still alive send sigKILL.
