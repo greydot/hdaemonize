@@ -1,10 +1,10 @@
-{-# LANGUAGE CPP #-}
+{-# LANGUAGE CPP               #-}
 {-# LANGUAGE OverloadedStrings #-}
 module System.Posix.Daemonize (
   -- * Simple daemonization
   daemonize,
   -- * Building system services
-  serviced, CreateDaemon(..), simpleDaemon,
+  serviced, serviced', CreateDaemon(..), simpleDaemon, Operation(..),
   -- * Intradaemon utilities
   fatalError, exitCleanly,
   -- * Logging utilities
@@ -15,11 +15,11 @@ module System.Posix.Daemonize (
    http://sneakymustard.com/2008/12/11/haskell-daemons -}
 
 
-import Control.Applicative(pure)
-import Control.Monad (when)
-import Control.Monad.Trans
-import Control.Exception.Extensible
-import qualified Control.Monad as M (forever)
+import           Control.Applicative          (pure)
+import           Control.Exception.Extensible
+import           Control.Monad                (when)
+import qualified Control.Monad                as M (forever)
+import           Control.Monad.Trans
 
 #if MIN_VERSION_base(4,6,0)
 import Prelude
@@ -31,19 +31,21 @@ import Prelude hiding (catch)
 import Control.Applicative ((<$), (<$>))
 #endif
 
-import Data.ByteString (ByteString)
-import qualified Data.ByteString.Char8 as ByteString
-import Data.ByteString.Unsafe (unsafeUseAsCStringLen)
+import           Data.ByteString        (ByteString)
+import qualified Data.ByteString.Char8  as ByteString
+import           Data.ByteString.Unsafe (unsafeUseAsCStringLen)
 
 import Data.Foldable (asum)
 
-import Data.Maybe (isNothing, fromMaybe, fromJust)
-import System.Environment
-import System.Exit
-import System.Posix
-import System.Posix.Syslog (Priority(..), Facility(Daemon), Option, withSyslog)
-import qualified System.Posix.Syslog as Log
-import System.FilePath.Posix (joinPath)
+import           Data.Maybe            (fromJust, fromMaybe, isNothing)
+import           System.Environment
+import           System.Exit
+import           System.FilePath.Posix (joinPath)
+import           System.Posix          hiding (Start, Stop)
+import           System.Posix.Syslog   (Facility (Daemon), Option, Priority (..), withSyslog)
+import qualified System.Posix.Syslog   as Log
+
+data Operation = Start | Stop | Restart | Status deriving (Eq, Show)
 
 syslog :: Priority -> ByteString -> IO ()
 syslog pri msg = unsafeUseAsCStringLen msg (Log.syslog (Just Daemon) pri)
@@ -121,11 +123,26 @@ daemonize program = do
 
 serviced :: CreateDaemon a -> IO ()
 serviced daemon = do
+        args <- getArgs
+
+        let mOperation :: Maybe Operation
+            mOperation = case args of
+              ("start" : _)   -> Just Start
+              ("stop" : _)    -> Just Stop
+              ("restart" : _) -> Just Restart
+              ("status" : _)  -> Just Status
+              _               -> Nothing
+
+        if isNothing mOperation
+          then getProgName >>= \pname -> putStrLn $ "usage: " ++ pname ++ " {start|stop|status|restart}"
+          else serviced' daemon $ fromJust mOperation
+
+serviced' :: CreateDaemon a -> Operation -> IO ()
+serviced' daemon operation = do
         systemName <- getProgName
         let daemon' = daemon { name = if isNothing (name daemon)
                                         then Just systemName else name daemon }
-        args <- getArgs
-        process daemon' args
+        process daemon' operation
     where
       program' daemon = withSyslog (fromJust (name daemon)) (syslogOptions daemon) Daemon $
                       do let log = syslog Notice
@@ -135,12 +152,12 @@ serviced daemon = do
                          dropPrivileges daemon
                          forever $ program daemon privVal
 
-      process daemon ["start"] = pidExists daemon >>= f where
+      process daemon Start = pidExists daemon >>= f where
           f True  = do error "PID file exists. Process already running?"
                        exitImmediately (ExitFailure 1)
           f False = daemonize (program' daemon)
 
-      process daemon ["stop"]  =
+      process daemon Stop  =
           do pid <- pidRead daemon
              case pid of
                Nothing  -> pass
@@ -152,10 +169,10 @@ serviced daemon = do
                    `finally`
                    removeLink (pidFile daemon)
 
-      process daemon ["restart"] = do process daemon ["stop"]
-                                      process daemon ["start"]
+      process daemon Restart = do process daemon Stop
+                                  process daemon Start
 
-      process daemon ["status"] = pidExists daemon >>= f where
+      process daemon Status = pidExists daemon >>= f where
         f True =
           do pid <- pidRead daemon
              case pid of
@@ -166,9 +183,6 @@ serviced daemon = do
                               putStrLn $ fromJust (name daemon) ++ " is running."
                          else putStrLn $ fromJust (name daemon) ++ " is not running, but pidfile is remaining."
         f False = putStrLn $ fromJust (name daemon) ++ " is not running."
-
-      process _      _ =
-        getProgName >>= \pname -> putStrLn $ "usage: " ++ pname ++ " {start|stop|status|restart}"
 
       -- Wait 'secs' seconds for the process to exit, checking
       -- for liveness once a second.  If still alive send sigKILL.
@@ -192,11 +206,11 @@ data CreateDaemon a = CreateDaemon {
   privilegedAction :: IO a, -- ^ An action to be run as root, before
                             -- permissions are dropped, e.g., binding
                             -- a trusted port.
-  program :: a -> IO (), -- ^ The actual guts of the daemon, more or less
+  program          :: a -> IO (), -- ^ The actual guts of the daemon, more or less
                          -- the @main@ function.  Its argument is the result
                          -- of running 'privilegedAction' before dropping
                          -- privileges.
-  name :: Maybe String, -- ^ The name of the daemon, which is used as
+  name             :: Maybe String, -- ^ The name of the daemon, which is used as
                         -- the name for the PID file, as the name that
                         -- appears in the system logs, and as the user
                         -- and group the daemon tries to run as if
@@ -204,7 +218,7 @@ data CreateDaemon a = CreateDaemon {
                         -- this should be 'Nothing', in which case the
                         -- system defaults to the name of the
                         -- executable file containing the daemon.
-  user :: Maybe String, -- ^ Most daemons are initially run as root,
+  user             :: Maybe String, -- ^ Most daemons are initially run as root,
                         -- and try to change to another user so they
                         -- have fewer privileges and represent less of
                         -- a security threat.  This field specifies
@@ -213,10 +227,10 @@ data CreateDaemon a = CreateDaemon {
                         -- on the system, it next tries to become a
                         -- user with the same name as the daemon, and
                         -- if that fails, the user @daemon@.
-  group :: Maybe String, -- ^ 'group' is the group the daemon should
+  group            :: Maybe String, -- ^ 'group' is the group the daemon should
                          -- try to run as, and works the same way as
                          -- the user field.
-  syslogOptions :: [Option], -- ^ The options the daemon should set on
+  syslogOptions    :: [Option], -- ^ The options the daemon should set on
                              -- syslog.  You can safely leave this as @[]@.
   pidfileDirectory :: Maybe FilePath, -- ^ The directory where the
                                       -- daemon should write and look
@@ -225,7 +239,7 @@ data CreateDaemon a = CreateDaemon {
                                       -- have a good reason to do
                                       -- otherwise, leave this as
                                       -- 'Nothing'.
-  killWait :: Maybe Int -- ^ How many seconds to wait between sending
+  killWait         :: Maybe Int -- ^ How many seconds to wait between sending
                         -- sigTERM and sending sigKILL.  If Nothing
                         -- wait forever.  Default 4.
 }
