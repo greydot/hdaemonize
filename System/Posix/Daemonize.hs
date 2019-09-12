@@ -15,6 +15,7 @@ module System.Posix.Daemonize (
    http://sneakymustard.com/2008/12/11/haskell-daemons -}
 
 
+import Control.Applicative(pure)
 import Control.Monad (when)
 import Control.Monad.Trans
 import Control.Exception.Extensible
@@ -33,6 +34,9 @@ import Control.Applicative ((<$), (<$>))
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as ByteString
 import Data.ByteString.Unsafe (unsafeUseAsCStringLen)
+
+import Data.Foldable (asum)
+
 import Data.Maybe (isNothing, fromMaybe, fromJust)
 import System.Environment
 import System.Exit
@@ -314,12 +318,26 @@ getUserID user =
 
 dropPrivileges :: CreateDaemon a -> IO ()
 dropPrivileges daemon =
-    do Just ud <- getUserID "daemon"
-       Just gd <- getGroupID "daemon"
-       let targetUser = fromMaybe (fromJust $ name daemon) (user daemon)
-           targetGroup = fromMaybe (fromJust $ name daemon) (group daemon)
-       u <- fromMaybe ud <$> getUserID targetUser
-       g <- fromMaybe gd <$> getGroupID targetGroup
+    do let targetUser = fromJust $ asum [ user daemon
+                                        , name daemon
+                                        , Just "daemon"
+                                        ]
+           targetGroup = fromJust $ asum [ group daemon
+                                         , name daemon
+                                         , Just "daemon"
+                                         ]
+       mud <- getUserID targetUser
+       mgd <- getGroupID targetGroup
+       u <- case mud of
+           Nothing -> do syslog Error "Privilege drop failure, no suitable user."
+                         exitImmediately (ExitFailure 1)
+                         undefined
+           Just ud -> pure ud
+       g <- case mgd of
+           Nothing -> do syslog Error "Privilege drop failure, no suitable group."
+                         exitImmediately (ExitFailure 1)
+                         undefined
+           Just gd -> pure gd
        setGroupID g
        setUserID u
 

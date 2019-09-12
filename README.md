@@ -68,6 +68,9 @@ prefers to use those of `mydaemon`, if present.
 Changelog
 ---------
 
+* 0.5.5
+    * Fix a bug where hdaemonize fails when user or group "daemon" is absent
+
 * 0.5.4
     * Update to use hsyslog == 5.
 

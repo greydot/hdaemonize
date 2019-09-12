@@ -1,5 +1,5 @@
 Name:		hdaemonize
-Version:	0.5.4
+Version:	0.5.5
 Cabal-Version:  >= 1.6
 License:	BSD3
 License-file:   LICENSE
@@ -9,13 +9,13 @@ Homepage:       http://github.com/greydot/hdaemonize
 Category:	System
 Synopsis:       Library to handle the details of writing daemons for UNIX
 Description:	Provides two functions that help writing better UNIX daemons,
-		daemonize and serviced: daemonize does what a daemon should do
-		(forking and closing descriptors), while serviced does that and
-		more (syslog interface, PID file writing, start-stop-restart
-		command line handling, dropping privileges).
+                daemonize and serviced: daemonize does what a daemon should do
+                (forking and closing descriptors), while serviced does that and
+                more (syslog interface, PID file writing, start-stop-restart
+                command line handling, dropping privileges).
 Build-Type:	Simple
 Extra-Source-Files:	README.md
-Tested-With: GHC == 7.6.3, GHC == 7.8.4, GHC == 7.10.3, GHC == 8.0.1, GHC == 8.0.2
+Tested-With: GHC == 8.2.2, GHC == 8.4.4, GHC == 8.6.4
 
 Library
   Build-Depends:    base >= 4 && < 5
